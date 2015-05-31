@@ -50,6 +50,62 @@ check_prereqs()
    
 }
 
+check_nuget()
+{
+    # Copy from build.sh in corefx 
+    # Pull NuGet.exe down if we don't have it already    
+    if [ ! -e "$__NugetPath" ]; then
+        which curl wget > /dev/null 2> /dev/null
+        if [ $? -ne 0 -a $? -ne 1 ]; then
+            echo "cURL or wget is required to build corefx. Please see https://github.com/dotnet/corefx/wiki/Building-On-Unix for more details."
+            exit 1
+        fi
+        echo "Restoring NuGet.exe..."
+    
+        which wget > /dev/null 2> /dev/null
+        if [ $? -ne 0 ]; then
+           curl -sSL --create-dirs -o $__NugetPath https://api.nuget.org/downloads/nuget.exe
+        else
+           mkdir -p $__PackagesDir
+           wget -q -O $__NugetPath https://api.nuget.org/downloads/nuget.exe
+        fi
+    
+        if [ $? -ne 0 ]; then
+            echo "Failed to restore NuGet.exe."
+            exit 1
+        fi
+    fi
+}
+
+check_msbuild()
+{
+    __MsbuildPackageId="Microsoft.Build.Mono.Debug"
+    __MsbuildPackageVersion="14.1.0.0-prerelease"
+    __MsbuildPath=$__PackagesDir/$__MsbuildPackageId.$__MsbuildPackageVersion/lib/MSBuild.exe    
+    # Grab the MSBuild package if we don't have it already
+    if [ ! -e "$__MsbuildPath" ]; then
+        echo "Restoring MSBuild..."
+        mono "$__NugetPath" install $__MsbuildPackageId -Version $__MsbuildPackageVersion -ConfigFile "$__NugetConfig" -OutputDirectory "$__PackagesDir"
+        if [ $? -ne 0 ]; then
+            echo "Failed to restore MSBuild."
+            exit 1
+        fi
+    fi
+}
+
+build_mscorlib()
+{
+    echo "Commencing mscorlib build"
+    check_msbuild
+    __MScorlibBuildLog=$__LogsDir/mscorlib_$__BuildOS"_"$__BuildArch"_"$__BuildType.log
+    mono $__MsbuildPath "$__ProjectDir\build.proj" /nologo /verbosity:minimal "/fileloggerparameters:Verbosity=diag;LogFile=$__MScorlibBuildLog" /p:OS=$__BuildOS "$@"
+    if [ $? != 0 ]; then
+        echo "Failed to build mscorlib."
+        exit 1
+    fi
+    echo "Build mscorlib successfully."
+}
+
 build_coreclr()
 {
     # All set to commence the build
@@ -136,6 +192,8 @@ __CMakeArgs=DEBUG
 __ProjectDir="$__ProjectRoot"
 __SourceDir="$__ProjectDir/src"
 __PackagesDir="$__ProjectDir/packages"
+__NugetPath="$__PackagesDir/NuGet.exe"
+__NugetConfig="$__ProjectDir/NuGet.Config"
 __RootBinDir="$__ProjectDir/bin"
 __LogsDir="$__RootBinDir/Logs"
 __UnprocessedBuildArgs=
@@ -144,6 +202,7 @@ __CleanBuild=false
 __VerboseBuild=false
 __ClangMajorVersion=3
 __ClangMinorVersion=5
+__MscorlibOnly=0
 
 for i in "$@"
     do
@@ -182,6 +241,9 @@ for i in "$@"
         __ClangMajorVersion=3
         __ClangMinorVersion=7
         ;;
+        mscorlib)
+        __MscorlibOnly=1
+        ;;
         *)
         __UnprocessedBuildArgs="$__UnprocessedBuildArgs $i"
     esac
@@ -198,6 +260,13 @@ __TestIntermediatesDir="$__RootBinDir/tests/obj/$__BuildOS.$__BuildArch.$__Build
 # Specify path to be set for CMAKE_INSTALL_PREFIX.
 # This is where all built CoreClr libraries will copied to.
 export __CMakeBinDir="$__BinDir"
+
+# Build mscorlib
+if [ $__MscorlibOnly == 1 ]; then
+check_nuget
+build_mscorlib
+exit 0
+fi
 
 # Configure environment if we are doing a clean build.
 if [ $__CleanBuild == 1 ]; then
